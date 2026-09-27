@@ -29,7 +29,7 @@ jobs:
       - name: Package
         run: |
           rm -f picodeck-cdogs-*.zip
-          zip -9 -r "picodeck-cdogs-${GITHUB_REF_NAME//\//-}.zip" app.json main.elf data
+          zip -9 -r "picodeck-cdogs-${GITHUB_REF_NAME//\//-}.zip" app.json main.elf icon.png data
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
