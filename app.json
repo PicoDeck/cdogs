@@ -3,7 +3,7 @@
     "name": "C-Dogs",
     "description": "Classic overhead run-and-gun game",
     "type": "native",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "requirements": ["root-filesystem", "audio"],
     "category": "games",
     "author": "PicoDeck",
