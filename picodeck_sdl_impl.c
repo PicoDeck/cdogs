@@ -1026,6 +1026,19 @@ static void picodeck_flush_char_release_queue(void) {
     s_char_release_count = 0;
 }
 
+/* Emit the KEYDOWN / KEYUP for one key whose held state changed. */
+static void picodeck_key_edge(SDL_Scancode sc, bool was, bool now) {
+    if (was == now) return;
+    SDL_Event ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.type = now ? SDL_KEYDOWN : SDL_KEYUP;
+    ev.key.state = now ? SDL_PRESSED : SDL_RELEASED;
+    ev.key.keysym.scancode = sc;
+    ev.key.keysym.sym = scancode_to_keycode(sc);
+    s_key_state[sc] = now ? 1 : 0;
+    picodeck_push_event(&ev);
+}
+
 void SDL_PumpEvents(void) {
     if (!g_picodeck_api || !g_picodeck_api->input) return;
 
@@ -1046,19 +1059,26 @@ void SDL_PumpEvents(void) {
         picodeck_push_event(&quit_ev);
     }
 
-    /* Poll PicoDeck button states and generate key events */
-    /* Check directional buttons */
+    /* Poll PicoDeck button states and generate key events. Two sources feed
+     * the same key state: the BTN_* key masks and, on firmware with the
+     * gamepad (API version 9), the logical gamepad, so the player's
+     * Settings -> Controls bindings apply. Older firmware reads the keys
+     * (arrows) it always did. */
     static uint32_t prev_buttons = 0;
+    static uint32_t prev_pad = 0;
     uint32_t buttons = g_picodeck_api->input->getButtons();
+    bool have_pad = g_picodeck_api->version >= 9 && g_picodeck_api->gamepad;
+    uint32_t pad = have_pad ? g_picodeck_api->gamepad->getButtons() : 0;
 
-    /* Button-to-scancode mapping */
+    /* Key buttons. With the gamepad the arrows and F1-F5 belong to it (they
+     * are its default bindings), so only Enter and Esc stay on the keys. */
     struct { uint32_t btn; SDL_Scancode sc; } btn_map[] = {
+        { BTN_ENTER, SDL_SCANCODE_RETURN },
+        { BTN_ESC,   SDL_SCANCODE_ESCAPE },
         { BTN_UP,    SDL_SCANCODE_UP },
         { BTN_DOWN,  SDL_SCANCODE_DOWN },
         { BTN_LEFT,  SDL_SCANCODE_LEFT },
         { BTN_RIGHT, SDL_SCANCODE_RIGHT },
-        { BTN_ENTER, SDL_SCANCODE_RETURN },
-        { BTN_ESC,   SDL_SCANCODE_ESCAPE },
         { BTN_F1,    SDL_SCANCODE_F1 },
         { BTN_F2,    SDL_SCANCODE_F2 },
         { BTN_F3,    SDL_SCANCODE_F3 },
@@ -1066,32 +1086,32 @@ void SDL_PumpEvents(void) {
         { BTN_F5,    SDL_SCANCODE_F5 },
     };
     int nmap = sizeof(btn_map) / sizeof(btn_map[0]);
+    if (have_pad) nmap = 2;   /* Enter and Esc only */
 
-    for (int i = 0; i < nmap; i++) {
-        bool was = (prev_buttons & btn_map[i].btn) != 0;
-        bool now = (buttons & btn_map[i].btn) != 0;
-        if (now && !was) {
-            /* Key pressed */
-            SDL_Event ev;
-            memset(&ev, 0, sizeof(ev));
-            ev.type = SDL_KEYDOWN;
-            ev.key.state = SDL_PRESSED;
-            ev.key.keysym.scancode = btn_map[i].sc;
-            ev.key.keysym.sym = scancode_to_keycode(btn_map[i].sc);
-            s_key_state[btn_map[i].sc] = 1;
-            picodeck_push_event(&ev);
-        } else if (was && !now) {
-            /* Key released */
-            SDL_Event ev;
-            memset(&ev, 0, sizeof(ev));
-            ev.type = SDL_KEYUP;
-            ev.key.state = SDL_RELEASED;
-            ev.key.keysym.scancode = btn_map[i].sc;
-            ev.key.keysym.sym = scancode_to_keycode(btn_map[i].sc);
-            s_key_state[btn_map[i].sc] = 0;
-            picodeck_push_event(&ev);
-        }
+    for (int i = 0; i < nmap; i++)
+        picodeck_key_edge(btn_map[i].sc, (prev_buttons & btn_map[i].btn) != 0,
+                          (buttons & btn_map[i].btn) != 0);
+
+    /* Gamepad -> C-Dogs' player-1 keyboard controls (the scancodes of the
+     * default Input/PlayerCodes0 config: fire X, switch weapon Z, grenade S,
+     * map A). Start pauses (Esc opens the in-game menu). */
+    static const struct { uint32_t btn; SDL_Scancode sc; } pad_map[] = {
+        { PAD_UP,    SDL_SCANCODE_UP },
+        { PAD_DOWN,  SDL_SCANCODE_DOWN },
+        { PAD_LEFT,  SDL_SCANCODE_LEFT },
+        { PAD_RIGHT, SDL_SCANCODE_RIGHT },
+        { PAD_A,     SDL_SCANCODE_X },
+        { PAD_B,     SDL_SCANCODE_Z },
+        { PAD_X,     SDL_SCANCODE_S },
+        { PAD_Y,     SDL_SCANCODE_A },
+        { PAD_START, SDL_SCANCODE_ESCAPE },
+    };
+    if (have_pad) {
+        for (size_t i = 0; i < sizeof(pad_map) / sizeof(pad_map[0]); i++)
+            picodeck_key_edge(pad_map[i].sc, (prev_pad & pad_map[i].btn) != 0,
+                              (pad & pad_map[i].btn) != 0);
     }
+    prev_pad = pad;
 
     /* Also check character input for letter keys */
     char ch;

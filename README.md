@@ -16,6 +16,24 @@ The app needs the `root-filesystem` and `audio` requirements and reads its game 
 C-Dogs is on the **PicoDeck App Store** — open the Store app on your PicoCalc and install it
 from there. Nothing else to do.
 
+## Controls
+
+On firmware with the PicoDeck gamepad (API version 9) the game reads it, so
+Settings -> Controls rebinding applies. With the default bindings:
+
+| Gamepad | Default key | In C-Dogs |
+|---|---|---|
+| D-pad | arrows | move / menu cursor |
+| A | F4 | fire (menu: confirm) |
+| B | F5 | switch weapon |
+| X | Delete | grenade |
+| Y | Backspace | map |
+| Start | F1 | pause menu (Esc) |
+
+The letter keys the game always used (X fire, Z switch weapon, S grenade, A map)
+and Enter / Esc keep working. Older firmware reads only those keys and the
+arrows.
+
 ## Build
 
 Needs `arm-none-eabi-gcc` (tested with 15.2) and a newlib for ARM:
