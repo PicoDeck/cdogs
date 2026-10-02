@@ -32,8 +32,12 @@ Settings -> Controls rebinding applies. With the default bindings:
 
 - The pad presses player 1's *current* C-Dogs keys, read every frame, so
   Options -> Redefine keys is followed. Start is always Esc.
+- Options -> Redefine keys captures keyboard keys only, not pad buttons: to
+  change what a pad button is, use Settings -> Controls in the system menu.
 - A key bound to a pad button is that button only: its typed letter is not
-  also sent to the game (WASD on the D-pad does not throw grenades).
+  also sent to the game when it is one of player 1's keys (WASD on the D-pad
+  does not throw grenades). Backspace stays a typed key, so it still backs out
+  of menus.
 - On-screen hints ("Press F4 to ...") name the key bound to the pad button.
 - Enter, Esc and the letter keys the game always used (X fire, Z switch
   weapon, S grenade, A map) still work when not bound to a pad button. Older

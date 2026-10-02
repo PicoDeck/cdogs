@@ -32,7 +32,7 @@ static int s_event_tail = 0;
 static Uint8 s_key_state[SDL_NUM_SCANCODES];
 /* Per-source held flags behind s_key_state (see picodeck_key_set). */
 enum { SRC_BTN, SRC_PAD, SRC_CHR, SRC_COUNT };
-static Uint8 s_src[SRC_COUNT][SDL_NUM_SCANCODES];
+static Uint8 s_src[SDL_NUM_SCANCODES];   /* bit per source */
 
 /* Deferred release queue for character keys — see the long rationale
  * comment above SDL_PumpEvents for the frame-boundary model. */
@@ -1024,8 +1024,9 @@ static SDL_Keycode scancode_to_keycode(SDL_Scancode sc) {
 
 static void picodeck_key_set(int src, SDL_Scancode sc, bool now) {
     if (sc <= SDL_SCANCODE_UNKNOWN || sc >= SDL_NUM_SCANCODES) return;
-    s_src[src][sc] = now ? 1 : 0;
-    bool down = s_src[SRC_BTN][sc] || s_src[SRC_PAD][sc] || s_src[SRC_CHR][sc];
+    if (now) s_src[sc] |= (Uint8)(1u << src);
+    else     s_src[sc] &= (Uint8)~(1u << src);
+    bool down = s_src[sc] != 0;
     if (down == (s_key_state[sc] != 0)) return;
     SDL_Event ev;
     memset(&ev, 0, sizeof(ev));
@@ -1080,11 +1081,23 @@ static int pad_targets(PadTarget out[PAD_TARGETS]) {
 
 #define PAD_ALL_BUTTONS 12
 
-/* Does the player's gamepad bind this typed character? Firmware still sends
- * the char for a key bound to a pad button (press and every repeat), and
- * C-Dogs would read it as its own control (WASD on the D-pad would throw
- * grenades and toggle the map). Labels: letters "A".."Z", "Space", "Bksp". */
+/* Should this typed character be dropped because the player's gamepad binds
+ * its key? Firmware still sends the char for a key bound to a pad button
+ * (press and every repeat), and C-Dogs would read it as its own control (WASD
+ * on the D-pad would throw grenades and toggle the map). Only chars whose
+ * scancode is one of the pad's targets (player 1's keys) are dropped: the
+ * rest, Backspace (menu "back") included, stay typed keys.
+ * Labels: letters "A".."Z", "Space", "Bksp". */
 static bool pad_binds_char(char c) {
+    {
+        SDL_Scancode csc = picodeck_key_to_scancode(c);
+        PadTarget t[PAD_TARGETS];
+        int n = pad_targets(t);
+        bool target = false;
+        for (int i = 0; i < n; i++)
+            if (t[i].sc == csc) target = true;
+        if (!target) return false;
+    }
     char one[2] = { 0, 0 };
     const char *want;
     if (c >= 'a' && c <= 'z') { one[0] = (char)(c - 32); want = one; }
