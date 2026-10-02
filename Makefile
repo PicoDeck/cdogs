@@ -1,6 +1,8 @@
 # PicoDeck C-Dogs SDL Native App Build
 
 CC      = arm-none-eabi-gcc
+# EXTRA_CFLAGS: extra compiler flags without clobbering CFLAGS, e.g. the key-edge
+# trace build for the E2E test: touch picodeck_sdl_impl.c; make EXTRA_CFLAGS=-DPICODECK_KEY_TRACE
 CFLAGS  = -mcpu=cortex-m33 -mthumb -std=gnu11 \
           -fpie -fno-plt -ffunction-sections -fdata-sections \
           -Os -g \
@@ -82,7 +84,7 @@ $(GEN_SYS_CONFIG): sys_config.h
 	cp $< $@
 
 $(TARGET): $(SRCS) $(GEN_SYS_CONFIG) sdk/native/linker.ld sdk/native/os.h sdk/native/app_abi.h
-	$(CC) $(CFLAGS) $(SRCS) $(LDFLAGS) -o $@
+	$(CC) $(CFLAGS) $(EXTRA_CFLAGS) $(SRCS) $(LDFLAGS) -o $@
 	cp $@ $@.debug
 	arm-none-eabi-strip $@
 	arm-none-eabi-size $@
