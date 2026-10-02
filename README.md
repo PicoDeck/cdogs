@@ -24,15 +24,20 @@ Settings -> Controls rebinding applies. With the default bindings:
 | Gamepad | Default key | In C-Dogs |
 |---|---|---|
 | D-pad | arrows | move / menu cursor |
-| A | F4 | fire (menu: confirm) |
+| A | F4 | fire (menus: confirm) |
 | B | F5 | switch weapon |
 | X | Delete | grenade |
-| Y | Backspace | map |
-| Start | F1 | pause menu (Esc) |
+| Y | Backspace | map (menus: Backspace = back) |
+| Start | F1 | Esc: pause menu (menus: back / quit) |
 
-The letter keys the game always used (X fire, Z switch weapon, S grenade, A map)
-and Enter / Esc keep working. Older firmware reads only those keys and the
-arrows.
+- The pad presses player 1's *current* C-Dogs keys, read every frame, so
+  Options -> Redefine keys is followed. Start is always Esc.
+- A key bound to a pad button is that button only: its typed letter is not
+  also sent to the game (WASD on the D-pad does not throw grenades).
+- On-screen hints ("Press F4 to ...") name the key bound to the pad button.
+- Enter, Esc and the letter keys the game always used (X fire, Z switch
+  weapon, S grenade, A map) still work when not bound to a pad button. Older
+  firmware reads only those keys and the arrows.
 
 ## Build
 

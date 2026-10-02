@@ -887,7 +887,7 @@ typedef enum {
 
 /* ── Additional functions ──────────────────────────────────────── */
 extern SDL_Surface *SDL_CreateRGBSurfaceWithFormatFrom(void *p, int w, int h, int d, int pitch, Uint32 fmt);
-static inline const char *SDL_GetScancodeName(SDL_Scancode sc) { (void)sc; return ""; }
+extern const char *SDL_GetScancodeName(SDL_Scancode sc);  /* picodeck_sdl_impl.c */
 static inline void SDL_GetWindowPosition(SDL_Window *w, int *x, int *y) { (void)w; if(x)*x=0; if(y)*y=0; }
 static inline void SDL_VideoQuit(void) {}
 static inline void SDL_SetWindowGrab(SDL_Window *w, SDL_bool g) { (void)w; (void)g; }

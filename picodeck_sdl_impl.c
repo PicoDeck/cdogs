@@ -7,6 +7,7 @@
 #include "os.h"
 #include "picodeck_heap.h"
 #include "picodeck_charcolors.h"
+#include "cdogs/events.h"   /* gEventHandlers: player 1's key config */
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -29,6 +30,9 @@ static int s_event_tail = 0;
 
 /* Keyboard state array */
 static Uint8 s_key_state[SDL_NUM_SCANCODES];
+/* Per-source held flags behind s_key_state (see picodeck_key_set). */
+enum { SRC_BTN, SRC_PAD, SRC_CHR, SRC_COUNT };
+static Uint8 s_src[SRC_COUNT][SDL_NUM_SCANCODES];
 
 /* Deferred release queue for character keys — see the long rationale
  * comment above SDL_PumpEvents for the frame-boundary model. */
@@ -99,6 +103,7 @@ void picodeck_sdl_init(const struct PicoCalcAPI *api) {
     (void)api;
     memset(&s_renderer, 0, sizeof(s_renderer));
     memset(s_key_state, 0, sizeof(s_key_state));
+    memset(s_src, 0, sizeof(s_src));
     s_event_head = s_event_tail = 0;
     s_char_release_count = 0;  /* Relaunch hygiene */
     s_pump_was_idle = true;
@@ -1011,32 +1016,128 @@ static SDL_Keycode scancode_to_keycode(SDL_Scancode sc) {
  * press edge), by design.
  */
 
+/* A scancode is down while ANY source holds it: the BTN_* key masks, the
+ * gamepad, or a typed character (down for a frame, see above). Each source
+ * keeps its own flag so one source releasing never clears a scancode another
+ * still holds (a char's deferred KEYUP vs a pad button held on the same
+ * key); the KEYDOWN / KEYUP goes out when the combined state changes. */
+
+static void picodeck_key_set(int src, SDL_Scancode sc, bool now) {
+    if (sc <= SDL_SCANCODE_UNKNOWN || sc >= SDL_NUM_SCANCODES) return;
+    s_src[src][sc] = now ? 1 : 0;
+    bool down = s_src[SRC_BTN][sc] || s_src[SRC_PAD][sc] || s_src[SRC_CHR][sc];
+    if (down == (s_key_state[sc] != 0)) return;
+    SDL_Event ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.type = down ? SDL_KEYDOWN : SDL_KEYUP;
+    ev.key.state = down ? SDL_PRESSED : SDL_RELEASED;
+    ev.key.keysym.scancode = sc;
+    ev.key.keysym.sym = scancode_to_keycode(sc);
+    s_key_state[sc] = down ? 1 : 0;
+#ifdef PICODECK_KEY_TRACE
+    g_picodeck_api->sys->log("KEYEDGE %s %d", down ? "down" : "up", (int)sc);
+#endif
+    picodeck_push_event(&ev);
+}
+
 static void picodeck_flush_char_release_queue(void) {
-    for (int i = 0; i < s_char_release_count; i++) {
-        SDL_Scancode sc = s_char_release_queue[i];
-        SDL_Event ev;
-        memset(&ev, 0, sizeof(ev));
-        ev.type = SDL_KEYUP;
-        ev.key.state = SDL_RELEASED;
-        ev.key.keysym.scancode = sc;
-        ev.key.keysym.sym = scancode_to_keycode(sc);
-        s_key_state[sc] = 0;
-        picodeck_push_event(&ev);
-    }
+    for (int i = 0; i < s_char_release_count; i++)
+        picodeck_key_set(SRC_CHR, s_char_release_queue[i], false);
     s_char_release_count = 0;
 }
 
-/* Emit the KEYDOWN / KEYUP for one key whose held state changed. */
-static void picodeck_key_edge(SDL_Scancode sc, bool was, bool now) {
-    if (was == now) return;
-    SDL_Event ev;
-    memset(&ev, 0, sizeof(ev));
-    ev.type = now ? SDL_KEYDOWN : SDL_KEYUP;
-    ev.key.state = now ? SDL_PRESSED : SDL_RELEASED;
-    ev.key.keysym.scancode = sc;
-    ev.key.keysym.sym = scancode_to_keycode(sc);
-    s_key_state[sc] = now ? 1 : 0;
-    picodeck_push_event(&ev);
+/* ── Gamepad ↔ C-Dogs controls ──────────────────────────────── */
+
+static bool pad_have(void) {
+    return g_picodeck_api->version >= 9 && g_picodeck_api->gamepad;
+}
+
+/* Gamepad buttons that drive player 1's controls, with the scancode each
+ * one presses. The scancodes are player 1's CURRENT key config (the
+ * "Redefine keys" menu changes it), read at every pump; an unset config
+ * (before the options load) falls back to the stock keys. */
+typedef struct { uint32_t btn; SDL_Scancode sc; } PadTarget;
+#define PAD_TARGETS 9
+
+static int pad_targets(PadTarget out[PAD_TARGETS]) {
+    const InputKeys *k = &gEventHandlers.keyboard.PlayerKeys[0];
+    SDL_Scancode left = k->left ? k->left : SDL_SCANCODE_LEFT;
+    SDL_Scancode right = k->right ? k->right : SDL_SCANCODE_RIGHT;
+    SDL_Scancode up = k->up ? k->up : SDL_SCANCODE_UP;
+    SDL_Scancode down = k->down ? k->down : SDL_SCANCODE_DOWN;
+    SDL_Scancode b1 = k->button1 ? k->button1 : SDL_SCANCODE_X;
+    SDL_Scancode b2 = k->button2 ? k->button2 : SDL_SCANCODE_Z;
+    SDL_Scancode gr = k->grenade ? k->grenade : SDL_SCANCODE_S;
+    SDL_Scancode mp = k->map ? k->map : SDL_SCANCODE_A;
+    PadTarget t[PAD_TARGETS] = {
+        { PAD_UP, up }, { PAD_DOWN, down }, { PAD_LEFT, left },
+        { PAD_RIGHT, right }, { PAD_A, b1 }, { PAD_B, b2 }, { PAD_X, gr },
+        { PAD_Y, mp }, { PAD_START, SDL_SCANCODE_ESCAPE },
+    };
+    memcpy(out, t, sizeof(t));
+    return PAD_TARGETS;
+}
+
+#define PAD_ALL_BUTTONS 12
+
+/* Does the player's gamepad bind this typed character? Firmware still sends
+ * the char for a key bound to a pad button (press and every repeat), and
+ * C-Dogs would read it as its own control (WASD on the D-pad would throw
+ * grenades and toggle the map). Labels: letters "A".."Z", "Space", "Bksp". */
+static bool pad_binds_char(char c) {
+    char one[2] = { 0, 0 };
+    const char *want;
+    if (c >= 'a' && c <= 'z') { one[0] = (char)(c - 32); want = one; }
+    else if (c >= 'A' && c <= 'Z') { one[0] = c; want = one; }
+    else if (c == ' ') want = "Space";
+    else if (c == '\b') want = "Bksp";
+    else return false;
+    for (int b = 0; b < PAD_ALL_BUTTONS; b++)
+        for (int slot = 0; slot < 2; slot++) {
+            const char *l = g_picodeck_api->gamepad->getLabel(1u << b, slot);
+            if (l && strcmp(l, want) == 0) return true;
+        }
+    return false;
+}
+
+/* Key names for C-Dogs' on-screen hints ("Press %s to quit", the redefine
+ * menu). The scancodes the gamepad drives name their pad button's key. */
+const char *SDL_GetScancodeName(SDL_Scancode sc) {
+    static char buf[2];
+    if (g_picodeck_api && pad_have()) {
+        PadTarget t[PAD_TARGETS];
+        int n = pad_targets(t);
+        for (int i = 0; i < n; i++) {
+            if (t[i].sc != sc || t[i].btn == PAD_START) continue;
+            const char *l = g_picodeck_api->gamepad->getLabel(t[i].btn, 0);
+            if (!l) l = g_picodeck_api->gamepad->getLabel(t[i].btn, 1);
+            if (l) return l;
+        }
+    }
+    if (sc >= SDL_SCANCODE_A && sc <= SDL_SCANCODE_Z) {
+        buf[0] = (char)('A' + (sc - SDL_SCANCODE_A)); buf[1] = 0; return buf;
+    }
+    if (sc >= SDL_SCANCODE_1 && sc <= SDL_SCANCODE_9) {
+        buf[0] = (char)('1' + (sc - SDL_SCANCODE_1)); buf[1] = 0; return buf;
+    }
+    switch (sc) {
+        case SDL_SCANCODE_0: return "0";
+        case SDL_SCANCODE_UP: return "Up";
+        case SDL_SCANCODE_DOWN: return "Down";
+        case SDL_SCANCODE_LEFT: return "Left";
+        case SDL_SCANCODE_RIGHT: return "Right";
+        case SDL_SCANCODE_RETURN: return "Enter";
+        case SDL_SCANCODE_ESCAPE: return "Esc";
+        case SDL_SCANCODE_BACKSPACE: return "Bksp";
+        case SDL_SCANCODE_TAB: return "Tab";
+        case SDL_SCANCODE_SPACE: return "Space";
+        case SDL_SCANCODE_F1: return "F1";
+        case SDL_SCANCODE_F2: return "F2";
+        case SDL_SCANCODE_F3: return "F3";
+        case SDL_SCANCODE_F4: return "F4";
+        case SDL_SCANCODE_F5: return "F5";
+        default: return "";
+    }
 }
 
 void SDL_PumpEvents(void) {
@@ -1059,20 +1160,12 @@ void SDL_PumpEvents(void) {
         picodeck_push_event(&quit_ev);
     }
 
-    /* Poll PicoDeck button states and generate key events. Two sources feed
-     * the same key state: the BTN_* key masks and, on firmware with the
-     * gamepad (API version 9), the logical gamepad, so the player's
-     * Settings -> Controls bindings apply. Older firmware reads the keys
-     * (arrows) it always did. */
-    static uint32_t prev_buttons = 0;
-    static uint32_t prev_pad = 0;
+    /* Key buttons. With the gamepad (API version 9) the arrows and F1-F5
+     * belong to it (they are its default bindings), so only Enter and Esc
+     * stay on the key masks; older firmware reads the keys it always did. */
     uint32_t buttons = g_picodeck_api->input->getButtons();
-    bool have_pad = g_picodeck_api->version >= 9 && g_picodeck_api->gamepad;
-    uint32_t pad = have_pad ? g_picodeck_api->gamepad->getButtons() : 0;
-
-    /* Key buttons. With the gamepad the arrows and F1-F5 belong to it (they
-     * are its default bindings), so only Enter and Esc stay on the keys. */
-    struct { uint32_t btn; SDL_Scancode sc; } btn_map[] = {
+    bool have_pad = pad_have();
+    static const struct { uint32_t btn; SDL_Scancode sc; } btn_map[] = {
         { BTN_ENTER, SDL_SCANCODE_RETURN },
         { BTN_ESC,   SDL_SCANCODE_ESCAPE },
         { BTN_UP,    SDL_SCANCODE_UP },
@@ -1085,37 +1178,44 @@ void SDL_PumpEvents(void) {
         { BTN_F4,    SDL_SCANCODE_F4 },
         { BTN_F5,    SDL_SCANCODE_F5 },
     };
-    int nmap = sizeof(btn_map) / sizeof(btn_map[0]);
-    if (have_pad) nmap = 2;   /* Enter and Esc only */
-
+    int nmap = have_pad ? 2 : (int)(sizeof(btn_map) / sizeof(btn_map[0]));
     for (int i = 0; i < nmap; i++)
-        picodeck_key_edge(btn_map[i].sc, (prev_buttons & btn_map[i].btn) != 0,
-                          (buttons & btn_map[i].btn) != 0);
+        picodeck_key_set(SRC_BTN, btn_map[i].sc, (buttons & btn_map[i].btn) != 0);
 
-    /* Gamepad -> C-Dogs' player-1 keyboard controls (the scancodes of the
-     * default Input/PlayerCodes0 config: fire X, switch weapon Z, grenade S,
-     * map A). Start pauses (Esc opens the in-game menu). */
-    static const struct { uint32_t btn; SDL_Scancode sc; } pad_map[] = {
-        { PAD_UP,    SDL_SCANCODE_UP },
-        { PAD_DOWN,  SDL_SCANCODE_DOWN },
-        { PAD_LEFT,  SDL_SCANCODE_LEFT },
-        { PAD_RIGHT, SDL_SCANCODE_RIGHT },
-        { PAD_A,     SDL_SCANCODE_X },
-        { PAD_B,     SDL_SCANCODE_Z },
-        { PAD_X,     SDL_SCANCODE_S },
-        { PAD_Y,     SDL_SCANCODE_A },
-        { PAD_START, SDL_SCANCODE_ESCAPE },
-    };
+    /* Gamepad -> player 1's controls (stock keys: arrows, fire X, switch
+     * weapon Z, grenade S, map A; Start is Esc, the pause menu and "back").
+     * The targets are re-read every pump: a "Redefine keys" change applies
+     * at once. Clear every target first so a changed target is released. */
+    static SDL_Scancode prev_targets[PAD_TARGETS];
     if (have_pad) {
-        for (size_t i = 0; i < sizeof(pad_map) / sizeof(pad_map[0]); i++)
-            picodeck_key_edge(pad_map[i].sc, (prev_pad & pad_map[i].btn) != 0,
-                              (pad & pad_map[i].btn) != 0);
+        PadTarget t[PAD_TARGETS];
+        int n = pad_targets(t);
+        uint32_t pad = g_picodeck_api->gamepad->getButtons();
+        for (int i = 0; i < n; i++)
+            if (prev_targets[i] != t[i].sc)
+                picodeck_key_set(SRC_PAD, prev_targets[i], false);
+        for (int i = 0; i < n; i++) prev_targets[i] = t[i].sc;
+        /* Two buttons on one scancode: held while either is. */
+        for (int i = 0; i < n; i++) {
+            bool held = false;
+            for (int j = 0; j < n; j++)
+                if (t[j].sc == t[i].sc && (pad & t[j].btn)) held = true;
+            picodeck_key_set(SRC_PAD, t[i].sc, held);
+        }
+    } else {
+        for (int i = 0; i < PAD_TARGETS; i++)
+            if (prev_targets[i]) {
+                picodeck_key_set(SRC_PAD, prev_targets[i], false);
+                prev_targets[i] = SDL_SCANCODE_UNKNOWN;
+            }
     }
-    prev_pad = pad;
 
     /* Also check character input for letter keys */
     char ch;
     while ((ch = g_picodeck_api->input->getChar()) != 0) {
+        /* A key bound to a pad button is that button, not a typed letter.
+         * Checked on every char: bindings change while the game runs. */
+        if (have_pad && pad_binds_char(ch)) continue;
         SDL_Scancode sc = picodeck_key_to_scancode(ch);
         if (sc != SDL_SCANCODE_UNKNOWN && sc != SDL_SCANCODE_UP &&
             sc != SDL_SCANCODE_DOWN && sc != SDL_SCANCODE_LEFT &&
@@ -1124,40 +1224,22 @@ void SDL_PumpEvents(void) {
             /* Key down. The matching KEYUP is deferred until the first
              * SDL_PumpEvents call of the NEXT external frame (gated by
              * s_pump_was_idle) so the scancode is visibly down for one
-             * full frame -- see the long comment above SDL_PumpEvents. */
-            SDL_Event ev;
-            memset(&ev, 0, sizeof(ev));
-            ev.type = SDL_KEYDOWN;
-            ev.key.state = SDL_PRESSED;
-            ev.key.keysym.scancode = sc;
-            ev.key.keysym.sym = scancode_to_keycode(sc);
-            s_key_state[sc] = 1;
-            picodeck_push_event(&ev);
+             * full frame -- see the long comment above. */
+            picodeck_key_set(SRC_CHR, sc, true);
 
             if (s_char_release_count < PICODECK_CHAR_RELEASE_QUEUE_SIZE) {
                 s_char_release_queue[s_char_release_count++] = sc;
             } else {
-                /* Queue full (more distinct chars than we can defer for one
-                 * pump interval) -- degrade to immediate keyup rather than
+                /* Queue full: degrade to an immediate keyup rather than
                  * drop the keydown or overflow the queue. */
-                SDL_Event up_ev;
-                memset(&up_ev, 0, sizeof(up_ev));
-                up_ev.type = SDL_KEYUP;
-                up_ev.key.state = SDL_RELEASED;
-                up_ev.key.keysym.scancode = sc;
-                up_ev.key.keysym.sym = scancode_to_keycode(sc);
-                s_key_state[sc] = 0;
-                picodeck_push_event(&up_ev);
+                picodeck_key_set(SRC_CHR, sc, false);
             }
         }
     }
 
-    prev_buttons = buttons;
-
     /* Record whether THIS call leaves the queue empty, for the next call's
-     * flush decision -- see the long comment above SDL_PumpEvents. Must be
-     * the last thing this function does (after every possible
-     * picodeck_push_event above). */
+     * flush decision -- see the long comment above. Must be the last thing
+     * this function does (after every possible picodeck_push_event). */
     s_pump_was_idle = (s_event_head == s_event_tail);
 }
 
